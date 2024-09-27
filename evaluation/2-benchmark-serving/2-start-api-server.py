@@ -28,7 +28,7 @@ MODEL_TO_PARALLEL_PARAMS = {
     "facebook/opt-13b": {
         "vllm": 1,
         "deepspeed": 1,
-        "distserve": (2, 1, 1, 1)   # TODO adjust me
+        "distserve": (1, 1, 1, 1)   # TODO adjust me
     },
     "facebook/opt-66b": {
         "vllm": 4,
@@ -53,7 +53,6 @@ def api_server_starter_routine(
     if args.backend == "vllm":
         tp_world_size = MODEL_TO_PARALLEL_PARAMS[args.model]["vllm"]
         script = f"""
-conda activate vllm;
 python -u -m vllm.entrypoints.api_server \\
     --host 0.0.0.0 --port {port} \\
     --engine-use-ray --worker-use-ray --disable-log-requests \\
@@ -72,7 +71,6 @@ python -u -m vllm.entrypoints.api_server \\
         if use_dummy_weight:
             print("WARNING: DeepSpeed does not support dummy weights, will use real weights.")
         script = f"""
-conda activate deepspeed-mii;
 set -u https_proxy; set -u http_proxy; set -u all_proxy;
 set -u HTTPS_PROXY; set -u HTTP_PROXY; set -u ALL_PROXY;
 python -m mii.entrypoints.api_server \\
@@ -87,12 +85,11 @@ python -m mii.entrypoints.api_server \\
     elif args.backend == "distserve":
         context_tp, context_pp, decoding_tp, decoding_pp = MODEL_TO_PARALLEL_PARAMS[args.model]["distserve"]
         script = f"""
-conda activate distserve;
 python -m distserve.api_server.distserve_api_server \\
     --host 0.0.0.0 \\
     --port {port} \\
-    --model {args.model} \\
-    --tokenizer {args.model} \\
+    --model /root/models/{args.model}/ \\
+    --tokenizer /root/models/{args.model}/ \\
     {"--use-dummy-weights" if use_dummy_weight else ""} \\
     \\
     --context-tensor-parallel-size {context_tp} \\
@@ -114,7 +111,7 @@ python -m distserve.api_server.distserve_api_server \\
     --decoding-max-tokens-per-batch 65536
 """
     
-    print(f"Starting server with command {script}")
+    # print(f"Starting server with command {script}")
     subprocess.run(["fish", "-c", script])
 
 
@@ -142,7 +139,7 @@ def metadata_server_process(port, args: argparse.Namespace):
     
     
 def main(args: argparse.Namespace):
-    print(args)
+    # print(args)
     port = BACKEND_TO_PORTS[args.backend]
     process = multiprocessing.Process(
         target=metadata_server_process,

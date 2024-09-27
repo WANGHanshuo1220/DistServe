@@ -129,7 +129,8 @@ class BlockManager:
         assert (
             request.request_id not in self.block_table
             or self.request_location.get(request.request_id, None) == BlockLocation.GPU
-        ), f"request {request.request_id} is currently on CPU. Please migrate it to GPU before allocating ore blocks"
+        ), f"request {request.request_id} is currently on CPU. " \
+            "Please migrate it to GPU before allocating more blocks"
 
         num_blocks_needed = self.get_num_blocks_needed(request)
         if request.request_id not in self.block_table:

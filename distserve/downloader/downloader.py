@@ -74,6 +74,7 @@ def download_and_convert_weights(model_config: ModelConfig) -> str:
 
     We mark whether the model already exists with an empty file called `done`.
     """
+    logger.info(f"In download_and_convert_weights {model_config.model}")
     model_name_or_path = model_config.model
     with get_lock(model_name_or_path):
         """
@@ -107,13 +108,31 @@ def download_and_convert_weights(model_config: ModelConfig) -> str:
         model = model_config.hf_config.model_type
         assert model in MODEL_REGISTRY, \
             f"Unknown model {model}, expected one of {MODEL_REGISTRY}"
-        
+
         # if the user provides a local path
         is_local = os.path.isdir(model_name_or_path)
         if is_local:
             if model_name_or_path[-1] == '/':
-                return model_name_or_path
+                # return model_name_or_path
+                allow_patterns = "*.bin"
+                hf_files = os.path.join(model_name_or_path, allow_patterns)
+                cache_dir = DISTSERVE_CACHE
+                storage_folder = \
+                    os.path.join(cache_dir, 
+                                repo_folder_name(repo_id=model_name_or_path)) + '/'
+                done_file = os.path.join(storage_folder, "done")
+                if os.path.exists(done_file):
+                    logger.info(f"Find cached model weights in {storage_folder}.")    
+                    return storage_folder
+                
+                # download and convert model weights
+                convert_weights(hf_files, storage_folder, dtype, model)
+                file = open(done_file, 'w')
+                file.close()
+                logger.info(f"1111111111111111111111111")
+                return storage_folder
             else:
+                logger.info(f"2222222222222222222222222")
                 return model_name_or_path + '/'
         
         # if the model weights have already been downloaded and converted before
