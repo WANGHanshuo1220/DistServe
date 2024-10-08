@@ -15,20 +15,59 @@ from tqdm import tqdm
 
 from structs import TestRequest, Dataset, RequestResult
 from backends import BACKEND_TO_PORTS
+from distserve.tokenizer import get_tokenizer
+from transformers import PreTrainedTokenizerBase
 
 pbar: Optional[tqdm] = None
 
-def sample_requests(dataset_path: str, num_prompts: int) -> List[TestRequest]:
-    """
-    sample_requests: Sample the given number of requests from the dataset.
-    """
-    dataset = Dataset.load(dataset_path)
-    if num_prompts > len(dataset.reqs):
-        raise ValueError(
-            f"Number of prompts ({num_prompts}) is larger than the dataset size ({len(dataset.reqs)})."
-        )
-    return random.sample(dataset.reqs, num_prompts)
+def sample_requests(
+    dataset_path: str,
+    num_requests: int,
+    tokenizer: str,
+    fixed_output_len: Optional[int] = None,
+) -> List[TestRequest]:
+    if fixed_output_len is not None and fixed_output_len < 4:
+        raise ValueError("output_len too small")
 
+    # Get tokenizer
+    tokenizer = get_tokenizer(tokenizer,
+                              trust_remote_code=args.trust_remote_code)
+    
+    # Load the dataset.
+    with open(dataset_path) as f:
+        dataset = json.load(f)
+    # Filter out the conversations with less than 2 turns.
+    dataset = [data for data in dataset if len(data["conversations"]) >= 2]
+    # Only keep the first two turns of each conversation.
+    dataset = [(data["conversations"][0]["value"],
+                data["conversations"][1]["value"]) for data in dataset]
+
+    # Shuffle the dataset.
+    random.shuffle(dataset)
+
+    # Filter out sequences that are too long or too short
+    filtered_dataset: List[TestRequest] = []
+    for i in range(len(dataset)):
+        if len(filtered_dataset) == num_requests:
+            break
+
+        # Tokenize the prompts and completions.
+        prompt = dataset[i][0]
+        prompt_token_ids = tokenizer(prompt).input_ids
+        completion = dataset[i][1]
+        completion_token_ids = tokenizer(completion).input_ids
+        prompt_len = len(prompt_token_ids)
+        output_len = len(completion_token_ids
+                         ) if fixed_output_len is None else fixed_output_len
+        if prompt_len < 4 or output_len < 4:
+            # Prune too short sequences.
+            continue
+        if prompt_len > 1024 or prompt_len + output_len > 2048:
+            # Prune too long sequences.
+            continue
+        filtered_dataset.append(TestRequest(prompt, prompt_len, output_len))
+
+    return filtered_dataset
 
 async def get_request(
     input_requests: List[TestRequest],
@@ -223,7 +262,7 @@ def main(args: argparse.Namespace):
 
     api_url = f"http://{args.host}:{args.port}/generate"
     input_requests = sample_requests(
-        args.dataset, args.num_prompts
+        args.dataset, args.num_prompts, args.tokenizer
     )
     print("Sampling done. Start benchmarking...")
 
@@ -316,6 +355,12 @@ if __name__ == "__main__":
         type=str,
         default=None,
         help="Exp result file will be named as <exp-result-prefix>-<num-prompts>-<req-rate>.exp (default: <backend>)"
+    )
+    parser.add_argument(
+        "--tokenizer",
+        type=str,
+        default=None,
+        help="tokenizer is used to convert dataset"
     )
     parser.add_argument(
         "--verbose",
