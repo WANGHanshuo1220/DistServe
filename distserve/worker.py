@@ -42,6 +42,7 @@ class ParaWorker:
         tensor_parallel_id: List[int] = None,   # Although the type is list[int], it is actually a NCCL unique ID
         pipeline_parallel_id: List[int] = None, # Same as above
     ) -> None:
+        logger.info(f"Paraworker init {stage}")
         self.worker_id = worker_id
         self.stage = stage
         self.model = None
@@ -93,7 +94,8 @@ class ParaWorker:
         if self.model_config.use_dummy_weights:
             self.model.init_dummy_weights()
         else:
-            path = download_and_convert_weights(self.model_config)
+            path = download_and_convert_weights(self.model_config, self.stage.name)
+            print(path)
             self.model.load_weight(path)
         torch.cuda.synchronize()
         logger.info(f"(worker {self.stage}.#{self.worker_id}) model {self.model_config.model} loaded")

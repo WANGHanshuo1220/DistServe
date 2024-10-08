@@ -34,6 +34,7 @@ import time
 import traceback
 import sys, os
 import signal
+import torch
 
 from fastapi import BackgroundTasks, FastAPI, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -129,7 +130,10 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     set_random_seed(args.seed)
-    ray.init()
+    # total_num_cpus = os.cpu_count()
+    # print(f"Number of available CPUs: {total_num_cpus}")
+    # ray.init(num_cpus=int(total_num_cpus/4))
+    ray.init(include_dashboard=False)
     
     engine = AsyncLLM.from_engine_args(args)
 

@@ -137,8 +137,8 @@ class SingleStageLLMEngine(ABC):
         
         self.scheduler: ContextStageScheduler | DecodingStageScheduler = self._get_scheduler()
 
-        logger.info(f"Scheduler: {self.scheduler}")
-        logger.info(f"Block manager: {self.block_manager}")
+        logger.info(f"{self.stage.name} Scheduler: {self.scheduler}")
+        logger.info(f"{self.stage.name} Block manager: {self.block_manager}")
 
 
     async def _init_workers(self):
@@ -147,7 +147,7 @@ class SingleStageLLMEngine(ABC):
         each worker will be assigned a GPU
         the worker will be placed in the corresponding placement group
         """
-        logger.info("Initializing workers")
+        logger.info(f"Initializing {self.stage.name} workers")
 
         layer_per_placement_group = self.model_config.get_num_layers() // len(self.placement_groups)
         layer_per_pp = self.model_config.get_num_layers(self.parallel_config)
@@ -188,6 +188,7 @@ class SingleStageLLMEngine(ABC):
         """
         init model by call init_model() on all workers
         """
+        logger.info(f"Initializing {self.stage.name} model")
         handlers = self._remote_call_all_workers_async("init_model")
         await asyncio.wait(handlers)
 
@@ -195,19 +196,19 @@ class SingleStageLLMEngine(ABC):
         """
         Profile available blocks and initialize k/v cache on all workers
         """
-        logger.info("Profiling available blocks")
+        logger.info(f"Profiling {self.stage.name} available blocks")
         num_gpu_blocks, num_cpu_blocks = await self.workers[0][0]._profile_num_available_blocks.remote(
             self.cache_config.block_size,
             self.cache_config.gpu_memory_utilization,
             self.cache_config.cpu_swap_space,
         )
             
-        logger.info(f"Profiling result: num_gpu_blocks: {num_gpu_blocks}, num_cpu_blocks: {num_cpu_blocks}")
+        logger.info(f"Profiling {self.stage.name} result: num_gpu_blocks: {num_gpu_blocks}, num_cpu_blocks: {num_cpu_blocks}")
         if self.stage == Stage.CONTEXT:
             # Do not set to 0 to avoid division by 0
             logger.info(f"The engine performs context stage, setting num_cpu_blocks to 1")
             num_cpu_blocks = 1
-        logger.info("Allocating kv cache")
+        logger.info(f"Allocating {self.stage.name} kv cache")
         kv_cache_mem_handles_1d = await asyncio.gather(*self._remote_call_all_workers_async(
             "init_kvcache_and_swap", num_gpu_blocks, num_cpu_blocks
         ))
