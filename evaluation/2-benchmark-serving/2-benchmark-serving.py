@@ -261,9 +261,14 @@ def main(args: argparse.Namespace):
     np.random.seed(args.seed)
 
     api_url = f"http://{args.host}:{args.port}/generate"
-    input_requests = sample_requests(
-        args.dataset, args.num_prompts, args.tokenizer
-    )
+    # input_requests = sample_requests(
+    #     args.dataset, args.num_prompts, args.tokenizer
+    # )
+    input_requests: List[TestRequest] = []
+    input_requests.append(TestRequest("I am a student", 5, 10))
+    input_requests.append(TestRequest("I am a student from China", 7, 10))
+    input_requests.append(TestRequest("I am a student from China, and i wish to have a nice day", 16, 10))
+    input_requests.append(TestRequest("I am a student from China, and i wish to", 12, 10))
     print("Sampling done. Start benchmarking...")
 
     global pbar

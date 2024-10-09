@@ -268,7 +268,8 @@ class LLMEngine:
         This function is intended to be used as an async generator, i.e., it can be
         used in a for loop. For example, `async for output in engine.generate(...)`
         """
-        assert self.engine_initialized, "Engine not initialized. Please call engine.initialize() before generating."
+        assert self.engine_initialized, \
+            "Engine not initialized. Please call engine.initialize() before generating."
         req = create_request(
             prompt,
             prompt_token_ids,
@@ -278,10 +279,14 @@ class LLMEngine:
             arrival_time,
             request_id,
         )
+        
         self.request_outputs[req.request_id] = asyncio.Queue()
         self.request_lifetime_events[req.request_id] = []
         
-        self._on_new_lifetime_event_callback(req.request_id, LifetimeEvent(LifetimeEventType.Issued))
+        self._on_new_lifetime_event_callback(
+            req.request_id, 
+            LifetimeEvent(LifetimeEventType.Issued)
+        )
         self.context_engine.add_request(req)
         
         while True:
@@ -315,10 +320,12 @@ def add_engine_cli_args(parser: argparse.ArgumentParser):
     parser.add_argument("--decoding-pipeline-parallel-size", type=int, default=1)
     parser.add_argument("--decoding-tensor-parallel-size", type=int, default=1)
     
-    parser.add_argument("--block-size", type=int, default=16)
+    # Here we set block size to 1 for radix tree cache
+    parser.add_argument("--block-size", type=int, default=1)
     parser.add_argument("--max-num-blocks-per-req", type=int, default=256)
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.9)
     parser.add_argument("--swap-space", type=int, default=16)
+    parser.add_argument("--rtc-disable", type=bool, default=False)
     
     parser.add_argument("--context-sched-policy", type=str, default="fcfs")
     parser.add_argument("--context-max-batch-size", type=int, default=256)

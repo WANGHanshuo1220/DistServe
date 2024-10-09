@@ -28,6 +28,8 @@ from distserve.worker import ParaWorker
 from distserve.context_stage_scheduler import ContextStageSchedConfig, ContextStageScheduler, get_context_stage_scheduler
 from distserve.decoding_stage_scheduler import DecodingStageSchedConfig, DecodingStageScheduler, get_decoding_stage_scheduler
 
+from distserve.radix_tree_cache import RadixCache
+
 logger = init_logger(__name__)
 
 # Sleep for this many seconds when there is no request in ContextStageLLMEngine.step()
@@ -76,6 +78,10 @@ class SingleStageLLMEngine(ABC):
     def _get_scheduler(self) -> ContextStageScheduler | DecodingStageScheduler:
         raise NotImplementedError()
     
+    @abstractmethod
+    def _get_radix_tree_cache(self):
+        raise NotImplementedError()
+
     def _free_request_resources(self, request_id: int) -> None:
         self.block_manager.free_blocks(request_id)
         self._remote_call_all_workers_async("clear_request_resource", request_id)
@@ -136,9 +142,11 @@ class SingleStageLLMEngine(ABC):
         )
         
         self.scheduler: ContextStageScheduler | DecodingStageScheduler = self._get_scheduler()
+        self.radix_tree = self._get_radix_tree_cache()
 
         logger.info(f"{self.stage.name} Scheduler: {self.scheduler}")
         logger.info(f"{self.stage.name} Block manager: {self.block_manager}")
+        logger.info(f"{self.stage.name} Radix Tree: {self.radix_tree}")
 
 
     async def _init_workers(self):
@@ -148,6 +156,10 @@ class SingleStageLLMEngine(ABC):
         the worker will be placed in the corresponding placement group
         """
         logger.info(f"Initializing {self.stage.name} workers")
+
+        assert (self.parallel_config.pipeline_parallel_size == 1 and 
+                self.parallel_config.tensor_parallel_size == 1), \
+                f"pp and tp are not supported yet"
 
         layer_per_placement_group = self.model_config.get_num_layers() // len(self.placement_groups)
         layer_per_pp = self.model_config.get_num_layers(self.parallel_config)
@@ -262,6 +274,9 @@ class ContextStageLLMEngine(SingleStageLLMEngine):
             self.block_manager
         )
     
+    def _get_radix_tree_cache(self):
+        return RadixCache(self.cache_config.rtc_disable)
+    
     def __init__(
         self,
         bridge_queue: asyncio.Queue[MigratingRequest],
@@ -308,6 +323,18 @@ class ContextStageLLMEngine(SingleStageLLMEngine):
         """
         # pick next batch from scheduler
         batched_requests = self.scheduler.get_next_batch_and_pop()
+        
+        # Todo
+        # Here we get prompt's token ids, and we need to check if RTC hit or not
+        # and prefetch kv tensors from host memory if necessary 
+        for req in batched_requests.requests:
+            # 1. set last node of each req
+            req.kv_indices, req.last_node = self.radix_tree.match_prefix(key=req.prompt_token_ids)
+            # print("check rtc match: ", len(req.kv_indices), len(req.prompt_token_ids))
+
+            # 2. Todo: Set reuse kv cache indices for each req (req.kv_indices) 
+            assert False, "Reuse kv cache from RTC is not implemented yet"
+
         if len(batched_requests) == 0:
             # Two cases may cause len(batched_requests) == 0:
             # 1. No request in the waiting queue
@@ -316,7 +343,8 @@ class ContextStageLLMEngine(SingleStageLLMEngine):
             self.batches_ret_futures.append(None)
             await asyncio.sleep(SLEEP_WHEN_CONTEXT_NO_REQUEST)
         else:
-            logger.info(f"(context) Forwarding with lengths {[len(request.prompt_token_ids) for request in batched_requests.requests]}")
+            logger.info(f"(context) Forwarding with lengths \
+                {[len(request.prompt_token_ids) for request in batched_requests.requests]}")
             # allocate blocks as needed
             self.block_manager.allocate_blocks_batched(batched_requests)
             
@@ -369,6 +397,12 @@ class ContextStageLLMEngine(SingleStageLLMEngine):
                 finished_batch.finish_one_iteration(
                     generated_tokens, generated_tokens_ids, end_time
                 )
+
+                # Add: Need to insert <token_ids, kv_indices> to RTC for every req in finished_batch
+                for req in finished_batch.requests:
+                    self.radix_tree.cache_prefill_req(req.last_node,
+                                                      req.prompt_token_ids,
+                                                      self.block_manager.block_table[req.request_id])
                 
                 self.scheduler.on_finish_requests(finished_batch)
                 
@@ -436,6 +470,9 @@ class DecodingStageLLMEngine(SingleStageLLMEngine):
             self._migrate_blocks
         )
         
+    def _get_radix_tree_cache(self):
+        return None
+
     def __init__(
         self,
         bridge_queue: asyncio.Queue[MigratingRequest],

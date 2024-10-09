@@ -143,7 +143,8 @@ class AsyncLLM:
                 block_size=args.block_size,
                 max_num_blocks_per_req=args.max_num_blocks_per_req,
                 gpu_memory_utilization=args.gpu_memory_utilization,
-                cpu_swap_space=args.swap_space
+                cpu_swap_space=args.swap_space,
+                rtc_disable=args.rtc_disable
             ),
             context_sched_config=ContextStageSchedConfig(
                 policy=args.context_sched_policy,

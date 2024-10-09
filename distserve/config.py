@@ -22,11 +22,13 @@ class CacheConfig:
         max_num_blocks_per_req: int,
         gpu_memory_utilization: int = 0.9,
         cpu_swap_space: int = 0,
+        rtc_disable: bool = True
     ):
         self.block_size = block_size
         self.max_num_blocks_per_req = max_num_blocks_per_req
         self.gpu_memory_utilization = gpu_memory_utilization
         self.cpu_swap_space = cpu_swap_space * GB
+        self.rtc_disable = rtc_disable
 
 
 class ParallelConfig:

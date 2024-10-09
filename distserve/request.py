@@ -7,6 +7,8 @@ from distserve.config import (
     ParallelConfig
 )
 
+from distserve.radix_tree_cache import TreeNode
+
 class SamplingParams:
     """Sampling parameters for text generation.
 
@@ -195,6 +197,10 @@ class Request:
         self.last_step_time = 0.0
 
         self.priority = priority
+
+        # For radix tree cache
+        self.last_node: TreeNode = None
+        self.kv_indices: List[int] = None
 
     def get_priority(self) -> int:
         return self.priority

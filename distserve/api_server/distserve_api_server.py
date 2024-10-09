@@ -77,6 +77,7 @@ async def generate(request: Request) -> Response:
     logger.info("Received a request.")
     request_dict = await request.json()
     prompt = request_dict.pop("prompt")
+    logger.info(f"Request prompt is {prompt}.")
     stream = request_dict.pop("stream", False)
     sampling_params = SamplingParams(**request_dict)
     request_id = random_uuid()

@@ -97,7 +97,7 @@ python -m distserve.api_server.distserve_api_server \\
     --decoding-tensor-parallel-size {decoding_tp} \\
     --decoding-pipeline-parallel-size {decoding_pp} \\
     \\
-    --block-size 16 \\
+    --block-size 1 \\
     --max-num-blocks-per-req 128 \\
     --gpu-memory-utilization 0.95 \\
     --swap-space 16 \\

@@ -197,7 +197,9 @@ class ContextStageFCFSScheduler(ContextStageScheduler):
         )
     
     def print_status(self):
-        logger.info(f"(context) {len(self.waiting_queue)} waiting, {len(self.unaccepted_queue)} finished but unaccepted, {self.num_on_fly_request_block} blocks occupied by on-the-fly requests")
+        logger.info(f"(context) {len(self.waiting_queue)} waiting, \
+                    {len(self.unaccepted_queue)} finished but unaccepted, \
+                    {self.num_on_fly_request_block} blocks occupied by on-the-fly requests")
 
 def get_context_stage_scheduler(
     sched_config: ContextStageSchedConfig,

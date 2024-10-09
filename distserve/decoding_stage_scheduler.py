@@ -107,7 +107,7 @@ class DecodingStageFCFSScheduler(DecodingStageScheduler):
             sched_config.policy == "fcfs"
         ), f"can not initialize a FCFS scheduler with policy {sched_config.policy}"
         self.sched_config = sched_config
-        # If the request has not been accepted (i.e. it still resides in the "bridge" queu
+        # If the request has not been accepted (i.e. it still resides in the "bridge" queue
         # and its block are still on the context stage engine's side), then it will be put
         # into the unaccepted queue.
         self.unaccepted_queue: List[MigratingRequest] = []
