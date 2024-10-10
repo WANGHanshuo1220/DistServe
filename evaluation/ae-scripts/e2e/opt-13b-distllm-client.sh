@@ -10,7 +10,7 @@ python3 ${root_path}/evaluation/2-benchmark-serving/2-benchmark-serving.py \
     --backend distserve \
     --tokenizer ${tokenizer} \
     --dataset ${dataset_path} \
-    --num-prompts-req-rates "[(30, 0.5)]" \
+    --num-prompts-req-rates "[(200, 1)]" \
     --exp-result-root ${root_path}/output \
     --exp-result-dir opt-13b-sharegpt
 

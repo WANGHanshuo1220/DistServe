@@ -324,16 +324,15 @@ class ContextStageLLMEngine(SingleStageLLMEngine):
         # pick next batch from scheduler
         batched_requests = self.scheduler.get_next_batch_and_pop()
         
-        # Todo
-        # Here we get prompt's token ids, and we need to check if RTC hit or not
+        # Add: Here we get prompt's token ids, and we need to check if RTC hit or not
         # and prefetch kv tensors from host memory if necessary 
         for req in batched_requests.requests:
-            # 1. set last node of each req
+            # set last node of each req
             req.kv_indices, req.last_node = self.radix_tree.match_prefix(key=req.prompt_token_ids)
-            # print("check rtc match: ", len(req.kv_indices), len(req.prompt_token_ids))
-
-            # 2. Todo: Set reuse kv cache indices for each req (req.kv_indices) 
-            assert False, "Reuse kv cache from RTC is not implemented yet"
+        
+        for req in batched_requests.requests:
+            print("check rtc match: ", len(req.kv_indices), len(req.prompt_token_ids))
+            print("first token indexes: ", req.get_first_new_token_index())
 
         if len(batched_requests) == 0:
             # Two cases may cause len(batched_requests) == 0:

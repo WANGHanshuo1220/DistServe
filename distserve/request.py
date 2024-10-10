@@ -200,7 +200,7 @@ class Request:
 
         # For radix tree cache
         self.last_node: TreeNode = None
-        self.kv_indices: List[int] = None
+        self.kv_indices: List[int] = []
 
     def get_priority(self) -> int:
         return self.priority
@@ -265,7 +265,8 @@ class Request:
         This might not be true if speculative decoding is used.
         """
         return (
-            0
+            # Here we change prefill first_new_token for radix cache reuse
+            len(self.kv_indices)
             if self.is_context_stage()
             else self.get_input_len() + self.get_output_len() - 1
         )
