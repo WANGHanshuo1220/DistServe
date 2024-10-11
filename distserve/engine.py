@@ -325,7 +325,7 @@ def add_engine_cli_args(parser: argparse.ArgumentParser):
     parser.add_argument("--max-num-blocks-per-req", type=int, default=256)
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.9)
     parser.add_argument("--swap-space", type=int, default=16)
-    parser.add_argument("--rtc-disable", type=bool, default=True)
+    parser.add_argument("--rtc-disable", type=bool, default=False)
     
     parser.add_argument("--context-sched-policy", type=str, default="fcfs")
     parser.add_argument("--context-max-batch-size", type=int, default=256)

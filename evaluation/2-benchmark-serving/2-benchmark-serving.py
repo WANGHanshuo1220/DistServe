@@ -264,11 +264,13 @@ def main(args: argparse.Namespace):
     input_requests = sample_requests(
         args.dataset, args.num_prompts, args.tokenizer
     )
+    # input_prompt1 = "I'm attempting to independently measure the performance (e.g., latency, throughput, etc.) of the prefill and decode phases. Is there a way to achieve this? I have noticed a few benchmarks that measure end-to-end throughput and latency but do not provide separate metrics for each phase."
+    # input_prompt2 = input_prompt1 + "I would greatly appreciate any guidance on profiling these two phases separately."
     # input_requests: List[TestRequest] = []
-    # input_requests.append(TestRequest("I am a student", 5, 10))
-    # input_requests.append(TestRequest("I am a student from China", 7, 10))
-    # input_requests.append(TestRequest("I am a student from China, and i wish to have a nice day", 16, 10))
-    # input_requests.append(TestRequest("I am a student from China, and i wish to", 12, 10))
+    # input_requests.append(TestRequest(input_prompt1, 
+    #                                   len(input_prompt1), 200))
+    # input_requests.append(TestRequest(input_prompt2, 
+    #                                   len(input_prompt2), 200))
     print("Sampling done. Start benchmarking...")
 
     global pbar

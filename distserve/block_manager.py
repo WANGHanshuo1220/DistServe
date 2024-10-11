@@ -125,12 +125,6 @@ class BlockManager:
 
     def allocate_blocks(self, request: Request):
         """Allocate blocks for a request"""
-        # Make sure the request is not already allocated or its blocks are on GPU
-        assert (
-            request.request_id not in self.block_table
-            or self.request_location.get(request.request_id, None) == BlockLocation.GPU
-        ), f"request {request.request_id} is currently on CPU. " \
-            "Please migrate it to GPU before allocating more blocks"
 
         num_blocks_needed = self.get_num_blocks_needed(request)
         if request.request_id not in self.block_table:
@@ -151,6 +145,14 @@ class BlockManager:
         """Allocate blocks for a batch of requests"""
         for request in batch_requests.requests:
             self.allocate_blocks(request)
+
+    def set_block_reuse(self, req_id: int, blocks: List):
+        """ Used for RTC reuse"""
+        assert (req_id not in self.block_table)
+        self.block_table[req_id] = blocks
+        # Todo: now we assume all blocks are on GPU
+        # Need further implementation for swapping and hierarchical storage
+        self.request_location[req_id] = BlockLocation.GPU
 
     def free_blocks(self, request_id: int):
         """Free blocks for a request"""

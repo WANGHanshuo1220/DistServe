@@ -30,11 +30,13 @@ from distserve.logger import init_logger
 logger = init_logger(__name__)
 
 class TreeNode:
+    """ TreeNode: containing maximum block_size tokens"""
+
     def __init__(self):
         self.children = defaultdict(TreeNode)
-        self.parent = None
-        self.key = None
-        self.value = None
+        self.parent: TreeNode = None
+        self.key: List = None # token_ids
+        self.value: int = None # block_id
         self.lock_ref = 0
         self.last_access_time = time.time()
 
@@ -55,8 +57,10 @@ class RadixCache():
     def __init__(
         self,
         disable: bool = False,
+        block_size: int = 16,
     ):
         self.disable = disable
+        self.node_size = block_size
         self.reset()
 
     ##### Public API #####
@@ -73,18 +77,14 @@ class RadixCache():
             return [], self.root_node
 
         value = []
-        last_node = [self.root_node]
+        last_node = self.root_node
         self._match_prefix_helper(self.root_node, key, value, last_node)
-        if value:
-            value = sum(value, [])
-        return value, last_node[0]
+        return value, last_node
 
-    def insert(self, key: List, value=None):
+    def insert(self, key: List, value:List):
         if self.disable:
             return 0
 
-        if value is None:
-            value = [x for x in key]
         return self._insert_helper(self.root_node, key, value)
 
     def cache_prefill_req(self, last_node: TreeNode, token_ids: List[int], kv_indices: List[int]):
@@ -99,10 +99,9 @@ class RadixCache():
         assert (token_ids is not None), "Req token_id is None"
 
         # Insert this req into tree_cache
-        new_prefix_len = self.insert(token_ids, kv_indices)
+        self.insert(key=token_ids, value=kv_indices)
 
         new_indices, new_last_node = self.match_prefix(key=token_ids)
-        assert len(new_indices) == len(token_ids), f"{len(new_indices)}, {len(token_ids)}"
 
         self.dec_lock_ref(last_node)
         self.inc_lock_ref(new_last_node)
@@ -177,39 +176,17 @@ class RadixCache():
         if len(key) == 0:
             return
 
-        if key[0] in node.children.keys():
-            child = node.children[key[0]]
+        search_key = ''.join(map(str, key[:self.node_size]))
+        if search_key in node.children.keys():
+            child = node.children[search_key]
             prefix_len = _key_match(child.key, key)
-            if prefix_len < len(child.key):
-                # Split original node to two nodes in order to 
-                # align prefill prompt to tree node
-                #
-                # Note that the difference with <insert> method is that when 
-                # there is a node mismatch <insert> method will not only split
-                # original node but also create a new node to store the new kv.
-                new_node = self._split_node(child.key, child, prefix_len)
-                value.append(new_node.value)
-                last_node[0] = new_node
-            else:
+            if prefix_len == self.node_size:
                 value.append(child.value)
-                last_node[0] = child
-                self._match_prefix_helper(child, key[prefix_len:], value, last_node)
+                last_node = child
+                if len(key) > prefix_len:
+                    self._match_prefix_helper(child, key[self.node_size:], value, last_node)
 
-    def _split_node(self, key, child: TreeNode, split_len: int):
-        # new_node -> child
-        new_node = TreeNode()
-        new_node.children = {key[split_len:][0]: child}
-        new_node.parent = child.parent
-        new_node.lock_ref = child.lock_ref
-        new_node.key = child.key[:split_len]
-        new_node.value = child.value[:split_len]
-        child.parent = new_node
-        child.key = child.key[split_len:]
-        child.value = child.value[split_len:]
-        new_node.parent.children[key[:split_len][0]] = new_node
-        return new_node
-
-    def _insert_helper(self, node: TreeNode, key: List, value):
+    def _insert_helper(self, node: TreeNode, key: List, value: List):
         """ Insert a seq into tree_cache
 
         Args:
@@ -220,49 +197,49 @@ class RadixCache():
         Returns:
             int: prefix_match_length
 
-        Recursively insertion. Assign keys(token_ids) and values(kv indices) to 
-        tree_nodes, and split tree_node is necessary.
+        Recursively insertion. Store keys(token_ids) and values(kv indices) to 
+        tree_nodes, tree node size = block size.
         """
         node.last_access_time = time.time()
         if len(key) == 0:
-            return 0
+            return
 
+        search_key = ''.join(map(str, key[:self.node_size]))
         # Start from checking first token_id in key 
-        if key[0] in node.children.keys():
-            child = node.children[key[0]]
+        if search_key in node.children.keys():
+            child = node.children[search_key]
             prefix_len = _key_match(child.key, key)
 
-            # prefix_len == len(child.key) means this child node is perfectly matched
-            if prefix_len == len(child.key):
+            # If matched prefix length == node_size (block_size)
+            if prefix_len == self.node_size:
                 # prefix_len == len(key) means they are perfectly aligned and 
                 # child node doesn't need to split
                 if prefix_len == len(key):
-                    return prefix_len
+                    return
                 else:
                     # len(key) > len(child.key) && prefix_len == len(child.key)
                     # need to recursively insert to child's child node
-                    key = key[prefix_len:]
-                    value = value[prefix_len:]
-                    return prefix_len + self._insert_helper(child, key, value)
-
-            # prefix_len < len(child.key), so child node needs to split to match prefix
-            new_node = self._split_node(child.key, child, prefix_len)
-            return prefix_len + self._insert_helper(
-                new_node, key[prefix_len:], value[prefix_len:]
-            )
+                    assert (len(key) > prefix_len)
+                    key = key[self.node_size:]
+                    value = value[1:]
+                    return self._insert_helper(child, key, value)
 
         if len(key):
+            assert (len(value) > 0)
             new_node = TreeNode()
             new_node.parent = node
-            new_node.key = key
-            new_node.value = value
-            node.children[key[0]] = new_node
-            self.evictable_size_ += len(value)
-        return 0
+            new_node.key = key[:self.node_size]
+            new_node.value = value[0]
+            
+            node.children[search_key] = new_node
+            self.evictable_size_ += len(new_node.key)
+
+            if len(key) > self.node_size:
+                self._insert_helper(new_node, key[self.node_size:], value[1:])
 
     def _print_helper(self, node: TreeNode, indent: int):
         for _, child in node.children.items():
-            print(" " * indent, len(child.key), child.key[:10], f"r={child.lock_ref}")
+            print(" " * indent, len(child.key), child.key, child.value, f"r={child.lock_ref}")
             self._print_helper(child, indent=indent + 2)
 
     def _delete_leaf(self, node):
@@ -273,7 +250,7 @@ class RadixCache():
         self.evictable_size_ -= len(node.key)
 
     def _total_size_helper(self, node: TreeNode):
-        x = len(node.value)
+        x = len(node.key)
         for child in node.children.values():
             x += self._total_size_helper(child)
         return x

@@ -266,7 +266,7 @@ class Request:
         """
         return (
             # Here we change prefill first_new_token for radix cache reuse
-            len(self.kv_indices)
+            0 if (len(self.kv_indices) == 0) else (len(self.kv_indices)*16 - 1)
             if self.is_context_stage()
             else self.get_input_len() + self.get_output_len() - 1
         )

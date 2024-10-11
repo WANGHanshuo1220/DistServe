@@ -329,10 +329,11 @@ class ContextStageLLMEngine(SingleStageLLMEngine):
         for req in batched_requests.requests:
             # set last node of each req
             req.kv_indices, req.last_node = self.radix_tree.match_prefix(key=req.prompt_token_ids)
+            if len(req.kv_indices):
+                self.block_manager.set_block_reuse(req.request_id, req.kv_indices)
         
         for req in batched_requests.requests:
-            print("check rtc match: ", len(req.kv_indices), len(req.prompt_token_ids))
-            print("first token indexes: ", req.get_first_new_token_index())
+            logger.info(f"RTC reuse rate = {len(req.kv_indices)*16/len(req.prompt_token_ids)*100:.2f}%")
 
         if len(batched_requests) == 0:
             # Two cases may cause len(batched_requests) == 0:
@@ -402,6 +403,7 @@ class ContextStageLLMEngine(SingleStageLLMEngine):
                     self.radix_tree.cache_prefill_req(req.last_node,
                                                       req.prompt_token_ids,
                                                       self.block_manager.block_table[req.request_id])
+                # self.radix_tree.pretty_print()
                 
                 self.scheduler.on_finish_requests(finished_batch)
                 
