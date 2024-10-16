@@ -500,15 +500,14 @@ class ContextStageLLMEngine(SingleStageLLMEngine):
         
         async def event_loop2():
             while True:
-                self.print_engine_status()
+                # self.print_engine_status()
                 await asyncio.sleep(PRINT_STATUS_INTERVAL)
 
         await asyncio.gather(event_loop1(), event_loop2())
         
     def print_engine_status(self):
-        # self.block_manager.print_block_usage()
-        # self.scheduler.print_status()
-        pass
+        self.block_manager.print_block_usage()
+        self.scheduler.print_status()
         
 
 class DecodingStageLLMEngine(SingleStageLLMEngine):
@@ -749,13 +748,13 @@ class DecodingStageLLMEngine(SingleStageLLMEngine):
         async def event_loop3():
             # Event loop 3. Print engine status
             while True:
-                self.print_engine_status()
+                # self.print_engine_status()
                 await asyncio.sleep(PRINT_STATUS_INTERVAL)
                 
         await asyncio.gather(event_loop1(), event_loop2(), event_loop3())
     
     def print_engine_status(self):
-        # self.block_manager.print_block_usage()
-        # self.scheduler.print_status()
+        self.block_manager.print_block_usage()
+        self.scheduler.print_status()
         pass
         

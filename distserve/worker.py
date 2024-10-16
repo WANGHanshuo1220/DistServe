@@ -225,8 +225,6 @@ class ParaWorker:
         )
         forward_time = time.time() - start
         self.execution_time += forward_time
-        if self.stage == Stage.CONTEXT:
-            print(f"Worker {self.stage}.#{self.worker_id} prefill time = {forward_time}")
 
         return generated_tokens_ids
 
