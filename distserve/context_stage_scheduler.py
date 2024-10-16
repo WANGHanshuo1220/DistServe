@@ -38,7 +38,7 @@ class ContextStageScheduler(ABC):
         raise NotImplementedError()
 
     @abstractmethod
-    def get_next_batch_and_pop(self) -> BatchedRequests:
+    def get_next_batch_and_pop(self, watermark_blocks: int) -> BatchedRequests:
         """
         Get a batch of requests for the execution of next iteration and
         pop the requests in the batch from the waiting queue.
@@ -124,7 +124,7 @@ class ContextStageFCFSScheduler(ContextStageScheduler):
         block_size = self.block_manager.cache_config.block_size
         return (length + block_size - 1) // block_size
             
-    def get_next_batch_and_pop(self) -> BatchedRequests:
+    def get_next_batch_and_pop(self, watermark_blocks: int = 0) -> BatchedRequests:
         """
         Get the next batch for the context stage in a FCFS-like manner, and pop them
         """
@@ -153,7 +153,7 @@ class ContextStageFCFSScheduler(ContextStageScheduler):
                     for req in self.unaccepted_queue
                 ]) +
                 self.num_on_fly_request_block 
-                <= self.block_manager.max_num_gpu_blocks
+                <= self.block_manager.max_num_gpu_blocks - watermark_blocks
             )
     
         while len(self.waiting_queue) > 0:

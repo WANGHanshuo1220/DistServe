@@ -223,8 +223,10 @@ class ParaWorker:
             self.v_cache,
             block_table,
         )
-        self.execution_time += time.time() - start
-        # print(f"Worker {self.stage}.#{self.worker_id} Step end")
+        forward_time = time.time() - start
+        self.execution_time += forward_time
+        if self.stage == Stage.CONTEXT:
+            print(f"Worker {self.stage}.#{self.worker_id} prefill time = {forward_time}")
 
         return generated_tokens_ids
 
@@ -284,21 +286,12 @@ class ParaWorker:
         # print(f"Swap {source_block_ids} ({'CPU' if is_swap_in else 'GPU'}) to {target_block_ids} ({'GPU' if is_swap_in else 'CPU'})")
         stream = self.swap_in_stream if is_swap_in else self.swap_out_stream
 
-        # Record event
-        event = torch.cuda.Event()
-        event.record(stream)
-
-        # Save that event
+        # Wait until previous swapping events of the same req is finishd
         for request_id in request_ids:
             if request_id in self.swap_event_table:
                 # If we've issued another swapping operation before, we shall wait it
                 # Pay attention to the difference between wait() and synchronize()
                 self.swap_event_table[request_id].wait(stream)
-            self.swap_event_table[request_id] = event
-        if is_swap_in:
-            self.latest_swap_in_event = event
-        else:
-            self.latest_swap_out_event = event
 
         # Swap
         with torch.cuda.stream(stream):
@@ -311,6 +304,18 @@ class ParaWorker:
                 self.k_swap,
                 self.v_swap,
             )
+
+        # Record event
+        event = torch.cuda.Event()
+        event.record(stream)
+
+        # Save that event
+        for request_id in request_ids:
+            self.swap_event_table[request_id] = event
+        if is_swap_in:
+            self.latest_swap_in_event = event
+        else:
+            self.latest_swap_out_event = event
 
     def clear_request_resource(self, request_id: int):
         """Clear the resources associated with the request."""

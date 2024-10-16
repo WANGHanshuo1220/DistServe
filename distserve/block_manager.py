@@ -6,15 +6,16 @@ from distserve.config import ModelConfig, ParallelConfig, CacheConfig
 from distserve.request import Request, BatchedRequests
 from distserve.logger import init_logger
 from distserve.utils import Stage
+from distserve.utils import BlockLocation
 
 logger = init_logger(__name__)
 
 
-class BlockLocation(Enum):
-    """The location of a block"""
+# class BlockLocation(Enum):
+#     """The location of a block"""
 
-    GPU = "gpu"
-    CPU = "cpu"
+#     GPU = "gpu"
+#     CPU = "cpu"
 
 
 class BlockManager:
@@ -149,24 +150,36 @@ class BlockManager:
     def set_block_reuse(self, req_id: int, blocks: List):
         """ Used for RTC reuse"""
         assert (req_id not in self.block_table)
-        self.block_table[req_id] = blocks
+        self.block_table[req_id] = blocks.copy()
         # Todo: now we assume all blocks are on GPU
         # Need further implementation for swapping and hierarchical storage
         self.request_location[req_id] = BlockLocation.GPU
 
-    def free_blocks(self, request_id: int):
+    def free_request(self, request_id: int):
         """Free blocks for a request"""
         assert request_id in self.block_table, f"request {request_id} not allocated"
-        if self.request_location[request_id] == BlockLocation.GPU:
-            self.free_gpu_blocks_list += self.block_table.pop(request_id)
-        else:
-            self.free_cpu_blocks_list += self.block_table.pop(request_id)
-        self.request_location.pop(request_id)
 
-    def free_blocks_batched(self, requests: List[Request]):
+        to_free_blocks = self.block_table.pop(request_id)
+        location = self.request_location.pop(request_id)
+
+        if self.cache_config.rtc_disable:
+            self.free_blocks(to_free_blocks, location)
+    
+    def free_blocks(self, blocks: List[int], location: BlockLocation):
+        """Add blocks to list"""
+        if location != BlockLocation.GPU:
+            print(f"location = {location}")
+        assert location == BlockLocation.GPU
+
+        if location == BlockLocation.GPU:
+            self.free_gpu_blocks_list += blocks
+        else:
+            self.free_cpu_blocks_list += blocks
+
+    def free_requests_batched(self, requests: List[Request]):
         """Free blocks for a batch of requests"""
         for request in requests:
-            self.free_blocks(request.request_id)
+            self.free_request(request.request_id)
 
     def get_block_table(self, request_id: int) -> List[int]:
         """Get the block table for a request"""
@@ -313,17 +326,18 @@ class BlockManager:
                 self.swapping_cpu_blocks_list += old_block_ids
             else:
                 self.swapping_gpu_blocks_list += old_block_ids
-        self.engine_remote_call_all_workers_async(
+        handlers = self.engine_remote_call_all_workers_async(
             "swap_blocks", requests, source_block_ids, target_block_ids, is_swap_in
         )
+        return handlers
 
     def swap_in_requests(self, requests: List[Request]):
         """Swap in blocks for a batch of requests"""
-        self.swap_requests(requests, is_swap_in=True)
+        return self.swap_requests(requests, is_swap_in=True)
 
     def swap_out_requests(self, requests: List[Request]):
         """Swap out blocks for a batch of requests"""
-        self.swap_requests(requests, is_swap_in=False)
+        return self.swap_requests(requests, is_swap_in=False)
 
     def is_all_requests_on_gpu(self, requests: BatchedRequests):
         """Check if all requests in a batch are on GPU"""

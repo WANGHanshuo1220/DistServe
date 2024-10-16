@@ -10,6 +10,12 @@ from enum import Enum
 GB = 1 << 30
 MB = 1 << 20
 
+class BlockLocation(Enum):
+    """The location of a block"""
+
+    GPU = "gpu"
+    CPU = "cpu"
+
 
 class Counter:
     def __init__(self, start: int = 0) -> None:

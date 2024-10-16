@@ -46,6 +46,9 @@ SLEEP_IN_EACH_EVENT_LOOP = 0
 # Print engine status every this many seconds
 PRINT_STATUS_INTERVAL = 1
 
+# RTC cache HBM memory proportion
+RTC_HBM_PROPORTION = 0.3
+
 class StepOutput:
     """The output of request in one step of inference.
     It contains the information of corresponding request and the generated tokens until this step.
@@ -83,7 +86,7 @@ class SingleStageLLMEngine(ABC):
         raise NotImplementedError()
 
     def _free_request_resources(self, request_id: int) -> None:
-        self.block_manager.free_blocks(request_id)
+        self.block_manager.free_request(request_id)
         self._remote_call_all_workers_async("clear_request_resource", request_id)
     
     def __init__(
@@ -142,12 +145,15 @@ class SingleStageLLMEngine(ABC):
         )
         
         self.scheduler: ContextStageScheduler | DecodingStageScheduler = self._get_scheduler()
+
+        # For RTC cache
         self.radix_tree = self._get_radix_tree_cache()
+        self.watermark_gpu_blocks = int(self.num_gpu_blocks * RTC_HBM_PROPORTION) \
+            if not self.cache_config.rtc_disable else 0
 
         logger.info(f"{self.stage.name} Scheduler: {self.scheduler}")
         logger.info(f"{self.stage.name} Block manager: {self.block_manager}")
         logger.info(f"{self.stage.name} Radix Tree: {self.radix_tree}")
-
 
     async def _init_workers(self):
         """
@@ -305,6 +311,48 @@ class ContextStageLLMEngine(SingleStageLLMEngine):
         self.batches_ret_futures = []
         
         self.bridge_queue = bridge_queue
+        
+        # For RTC cache
+        self.rtc_transfer_handler = {}
+
+    def _check_and_evict(self, finished_batch: BatchedRequests):
+        if self.cache_config.rtc_disable:
+            return
+        
+        blocks_needed = 0
+        for req in finished_batch.requests:
+            total_blocks_needed = self.block_manager.get_num_blocks_needed(req)
+            blocks_needed += (total_blocks_needed - len(req.kv_indices))
+
+        num_nodes = self.radix_tree.total_nodes()
+        if blocks_needed + num_nodes > self.watermark_gpu_blocks:
+            num_evict = self.watermark_gpu_blocks - (blocks_needed + num_nodes)
+            self.radix_tree.evict(num_evict * 2, self.block_manager.free_blocks)
+    
+    def _match_and_set_reuse(self, batched_requests: BatchedRequests):
+        if self.cache_config.rtc_disable:
+            return
+        
+        for req in batched_requests.requests:
+            # set last node of each req
+            req.kv_indices, req.last_node = self.radix_tree.match_prefix(key=req.prompt_token_ids)
+            self.radix_tree.inc_lock_ref(req.last_node)
+            if len(req.kv_indices):
+                self.block_manager.set_block_reuse(req.request_id, req.kv_indices)
+        
+        for req in batched_requests.requests:
+            logger.info(f"RTC reuse rate = {len(req.kv_indices)*16/len(req.prompt_token_ids)*100:.2f}%")
+    
+    def _save_to_rtc(self, finished_batch: BatchedRequests):
+        if self.cache_config.rtc_disable:
+            return
+        
+        # Add: Check and evict RTC nodes
+        self._check_and_evict(finished_batch)
+
+        for req in finished_batch.requests:
+            self.radix_tree.cache_prefill_req(req,
+                                              self.block_manager.block_table[req.request_id])
     
     def add_request(self, request: Request):
         self.scheduler.add_request(request)
@@ -322,18 +370,11 @@ class ContextStageLLMEngine(SingleStageLLMEngine):
         Note2. Pipeline parallel is not tested yet
         """
         # pick next batch from scheduler
-        batched_requests = self.scheduler.get_next_batch_and_pop()
+        batched_requests = self.scheduler.get_next_batch_and_pop(self.watermark_gpu_blocks)
         
         # Add: Here we get prompt's token ids, and we need to check if RTC hit or not
         # and prefetch kv tensors from host memory if necessary 
-        for req in batched_requests.requests:
-            # set last node of each req
-            req.kv_indices, req.last_node = self.radix_tree.match_prefix(key=req.prompt_token_ids)
-            if len(req.kv_indices):
-                self.block_manager.set_block_reuse(req.request_id, req.kv_indices)
-        
-        for req in batched_requests.requests:
-            logger.info(f"RTC reuse rate = {len(req.kv_indices)*16/len(req.prompt_token_ids)*100:.2f}%")
+        self._match_and_set_reuse(batched_requests)
 
         if len(batched_requests) == 0:
             # Two cases may cause len(batched_requests) == 0:
@@ -399,11 +440,7 @@ class ContextStageLLMEngine(SingleStageLLMEngine):
                 )
 
                 # Add: Need to insert <token_ids, kv_indices> to RTC for every req in finished_batch
-                for req in finished_batch.requests:
-                    self.radix_tree.cache_prefill_req(req.last_node,
-                                                      req.prompt_token_ids,
-                                                      self.block_manager.block_table[req.request_id])
-                # self.radix_tree.pretty_print()
+                self._save_to_rtc(finished_batch)
                 
                 self.scheduler.on_finish_requests(finished_batch)
                 
@@ -427,21 +464,31 @@ class ContextStageLLMEngine(SingleStageLLMEngine):
                 
                 # Inform the user that the request has finished the context stage
                 for request in finished_batch.requests:
-                    if not request.is_finished:
-                        # Push the request into the bridge queue if it is not finished
-                        migrating_req = MigratingRequest(
-                            request,
-                            self.block_manager.get_block_table(request.request_id),
-                            self.parallel_config,
-                        )
-                        self.bridge_queue.put_nowait(migrating_req) # This won't panic because the queue is unbounded
-                    else:
-                        self._free_request_resources(request.request_id)
+                    # Push the request into the bridge queue if it is not finished
+                    migrating_req = MigratingRequest(
+                        request,
+                        self.block_manager.get_block_table(request.request_id),
+                        self.parallel_config,
+                    )
+                    self.bridge_queue.put_nowait(migrating_req) # This won't panic because the queue is unbounded
+
+                # Todo: transfer kv cache to host memory async
+                # if not self.cache_config.rtc_disable:
+                #     handlers = self.block_manager.swap_out_requests(finished_batch.requests)
+                #     for i in len(handlers):
+                #         self.rtc_transfer_handler[finished_batch.requests[i].request_id] = handlers[i]
     
-    def clear_migrated_blocks_callback(self, migrated_request: MigratingRequest):
+    async def clear_migrated_blocks_callback(self, migrated_request: MigratingRequest):
         """
         Called when the decoding engine finishes migrating the blocks of the request.
         """
+        # if not self.cache_config.rtc_disable:
+        #     req_id = migrated_request.req.request_id
+        #     if req_id in self.rtc_transfer_handler:
+        #         await asyncio.wait(self.rtc_transfer_handler[req_id])
+        #         # ray.get(self.rtc_transfer_handler[req_id])
+        # else:
+        self.radix_tree.dec_lock_ref(migrated_request.req.last_node)
         self._free_request_resources(migrated_request.req.request_id)
         self.scheduler.on_request_migrated(migrated_request)
         
@@ -459,7 +506,9 @@ class ContextStageLLMEngine(SingleStageLLMEngine):
         await asyncio.gather(event_loop1(), event_loop2())
         
     def print_engine_status(self):
-        self.scheduler.print_status()
+        # self.block_manager.print_block_usage()
+        # self.scheduler.print_status()
+        pass
         
 
 class DecodingStageLLMEngine(SingleStageLLMEngine):
@@ -533,7 +582,7 @@ class DecodingStageLLMEngine(SingleStageLLMEngine):
         """
         Migrate one request from the context engine to the decoding engine
         
-        This function will be called be the decoding stage scheduler
+        This function will be called by the decoding stage scheduler
         
         This function performs the following steps:
         - Allocate blocks on the decoding engine's side
@@ -572,7 +621,7 @@ class DecodingStageLLMEngine(SingleStageLLMEngine):
         )
     
         # Clear the blocks on the context engine's side
-        self.clear_migrated_blocks_callback(migrating_req)
+        await self.clear_migrated_blocks_callback(migrating_req)
             
     async def _step(self) -> None:
         """
@@ -588,6 +637,8 @@ class DecodingStageLLMEngine(SingleStageLLMEngine):
         # this may trigger migration if some requests are still at context stage
         # this may trigger swap_in if some requests have been swapped out to CPU
         # this may also trigger swap_out if GPU blocks are not enough
+        # Note that this might trigger swapping operations asynchronously, but don't
+        # wait its finish
         batched_requests = self.scheduler.get_next_batch()
 
         if len(batched_requests) == 0:
@@ -604,6 +655,8 @@ class DecodingStageLLMEngine(SingleStageLLMEngine):
                 )
                 
             # Allocate blocks as needed
+            # Note that the swapping operations above might not be finished yet(async),
+            # so allocation might need to wait for its completion
             self.block_manager.allocate_blocks_batched(batched_requests)
 
             # Check if all requests are on GPU (i.e. not swapped out)
@@ -667,7 +720,7 @@ class DecodingStageLLMEngine(SingleStageLLMEngine):
                 finished_reqs = self.scheduler.pop_finished_requests()
 
                 # free blocks for finished requests
-                self.block_manager.free_blocks_batched(finished_reqs)
+                self.block_manager.free_requests_batched(finished_reqs)
                 self._remote_call_all_workers_async(
                     "clear_request_resource_batched", finished_reqs
                 )
@@ -702,6 +755,7 @@ class DecodingStageLLMEngine(SingleStageLLMEngine):
         await asyncio.gather(event_loop1(), event_loop2(), event_loop3())
     
     def print_engine_status(self):
-        self.block_manager.print_block_usage()
-        self.scheduler.print_status()
+        # self.block_manager.print_block_usage()
+        # self.scheduler.print_status()
+        pass
         

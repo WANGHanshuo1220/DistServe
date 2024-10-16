@@ -20,6 +20,24 @@ from transformers import PreTrainedTokenizerBase
 
 pbar: Optional[tqdm] = None
 
+def smart_text_cut(text: str):
+    ret = []
+
+    length = len(text)
+    cut_index = [int(length*0.8), int(length*0.7),
+                 int(length*0.5), int(length*0.3), length]
+    # cut_index = [int(length*0.8), int(length*0.7)]
+
+    for index in cut_index:
+        cut_index = text.rfind(' ', 0, index)
+    
+        if cut_index == -1:
+            ret.append(text[:length])
+        else:
+            ret.append(text[:cut_index])
+    
+    return ret
+
 def sample_requests(
     dataset_path: str,
     num_requests: int,
@@ -59,14 +77,20 @@ def sample_requests(
         prompt_len = len(prompt_token_ids)
         output_len = len(completion_token_ids
                          ) if fixed_output_len is None else fixed_output_len
-        if prompt_len < 4 or output_len < 4:
+        if prompt_len < 16 or output_len < 4:
             # Prune too short sequences.
             continue
-        if prompt_len > 1024 or prompt_len + output_len > 2048:
+        if prompt_len > 128 or prompt_len + output_len > 2048:
             # Prune too long sequences.
             continue
         filtered_dataset.append(TestRequest(prompt, prompt_len, output_len))
 
+        # cut_prompts = smart_text_cut(prompt)
+        # for prompt in cut_prompts:
+        #     prompt_token_ids = tokenizer(prompt).input_ids
+        #     prompt_len = len(prompt_token_ids)
+        #     filtered_dataset.append(TestRequest(prompt, prompt_len, output_len))
+            
     return filtered_dataset
 
 async def get_request(
