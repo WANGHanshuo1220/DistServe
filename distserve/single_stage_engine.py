@@ -29,6 +29,7 @@ from distserve.context_stage_scheduler import ContextStageSchedConfig, ContextSt
 from distserve.decoding_stage_scheduler import DecodingStageSchedConfig, DecodingStageScheduler, get_decoding_stage_scheduler
 
 from distserve.radix_tree_cache import RadixCache
+from distserve.utils import BlockLocation
 
 logger = init_logger(__name__)
 
@@ -315,19 +316,30 @@ class ContextStageLLMEngine(SingleStageLLMEngine):
         # For RTC cache
         self.rtc_transfer_handler = {}
 
-    def _check_and_evict(self, finished_batch: BatchedRequests):
+    def _check_and_evict(self, batched_requests: BatchedRequests):
         if self.cache_config.rtc_disable:
             return
         
+        if len(batched_requests.requests) == 0:
+            return
+        
         blocks_needed = 0
-        for req in finished_batch.requests:
-            total_blocks_needed = self.block_manager.get_num_blocks_needed(req)
+        for req in batched_requests.requests:
+            total_blocks_needed = self.block_manager.predict_num_blocks_needed_context(req)
             blocks_needed += (total_blocks_needed - len(req.kv_indices))
 
-        num_nodes = self.radix_tree.total_nodes()
-        if blocks_needed + num_nodes > self.watermark_gpu_blocks:
-            num_evict = self.watermark_gpu_blocks - (blocks_needed + num_nodes)
-            self.radix_tree.evict(num_evict * 2, self.block_manager.free_blocks)
+        num_gpu_nodes = self.radix_tree.total_gpu_nodes()
+        if blocks_needed + num_gpu_nodes > self.watermark_gpu_blocks:
+            num_evict_gpu = 2 * (self.watermark_gpu_blocks - (blocks_needed + num_gpu_nodes))
+
+            # First: Check if we have enough cpu blocks to hold evicted gpu blocks
+            # If not, simply delete some cpu blocks to make more room
+            if num_evict_gpu > self.block_manager.get_num_avail_cpu_blocks():
+                num_evict_cpu = 2 * (num_evict_gpu - self.block_manager.get_num_avail_cpu_blocks())
+                self.radix_tree.evict(num_evict_cpu, self.block_manager.free_blocks, BlockLocation.CPU)
+            
+            # Second: Swap gpu blocks to cpu
+            self.radix_tree.evict(num_evict_gpu, self.block_manager.swap_blocks, BlockLocation.GPU)
     
     def _match_and_set_reuse(self, batched_requests: BatchedRequests):
         if self.cache_config.rtc_disable:
@@ -346,9 +358,6 @@ class ContextStageLLMEngine(SingleStageLLMEngine):
     def _save_to_rtc(self, finished_batch: BatchedRequests):
         if self.cache_config.rtc_disable:
             return
-        
-        # Add: Check and evict RTC nodes
-        self._check_and_evict(finished_batch)
 
         for req in finished_batch.requests:
             self.radix_tree.cache_prefill_req(req,
@@ -376,6 +385,9 @@ class ContextStageLLMEngine(SingleStageLLMEngine):
         # and prefetch kv tensors from host memory if necessary 
         self._match_and_set_reuse(batched_requests)
 
+        # Add: Check and evict RTC nodes
+        self._check_and_evict(batched_requests)
+        
         if len(batched_requests) == 0:
             # Two cases may cause len(batched_requests) == 0:
             # 1. No request in the waiting queue

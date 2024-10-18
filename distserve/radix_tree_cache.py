@@ -26,6 +26,7 @@ from collections import defaultdict
 from typing import TYPE_CHECKING, Callable, List, Optional
 
 import torch
+import ray
 from distserve.logger import init_logger
 from distserve.utils import BlockLocation
 
@@ -71,13 +72,15 @@ class RadixCache():
     ):
         self.disable = disable
         self.node_size = block_size
-        self.num_nodes = 0
+        self.num_gpu_nodes = 0
+        self.num_cpu_nodes = 0
         self.reset()
 
     ##### Public API #####
 
     def reset(self):
-        self.num_nodes = 0
+        self.num_gpu_nodes = 0
+        self.num_cpu_nodes = 0
         self.root_node = TreeNode()
         self.root_node.key = []
         self.root_node.value = []
@@ -130,17 +133,47 @@ class RadixCache():
     def total_size(self):
         return self._total_size_helper(self.root_node)
 
-    def total_nodes(self):
-        return self._total_nodes_helper()
+    def total_gpu_nodes(self):
+        return self._total_gpu_nodes_helper()
 
-    def evict(self, num_nodes: int, evict_callback: Callable):
+    def evict(self, num_nodes: int, evict_callback: Callable, location: BlockLocation):
+        """ Evict num of GPU blocks(nodes)
+
+        Args:
+            num_nodes (int): num of nodes to evict
+            evict_callback (Callable): block_manager_callback
+            location (BlockLocation): indicate the location of blocks to be evicted
+        
+        Note:
+            Deleted nodes will be stored on cpu memory, if cpu does
+            not have enough blocks, then simply delete some without
+            any migration
+        """
         if self.disable:
             return
 
-        leaves = self._collect_leaves()
+        # Second: Find to-delete gpu blocks
+        
+        # Third: Swap these blocks from gpu to cpu 
+
+        # Finally: Set both gpu and cpu metadata correctly
+
+        leaves = self._collect_leaves(location)
         heapq.heapify(leaves)
 
+        def add_leaves_(node: TreeNode):
+            p_node = node.parent
+            if location == BlockLocation.CPU:
+                if len(p_node.children) == 0 and p_node.location == location:
+                    heapq.heappush(leaves, p_node)
+            else:
+                for child in p_node.children.values():
+                    if child.location == BlockLocation.GPU:
+                        return
+                heapq.heappush(leaves, p_node)
+
         num_evicted = 0
+        to_evict_nodes = []
         while num_evicted < num_nodes and len(leaves):
             node = heapq.heappop(leaves)
 
@@ -149,13 +182,24 @@ class RadixCache():
             if node.lock_ref > 0:
                 continue
 
-            evict_callback([node.value], node.location)
-            num_evicted += 1
-            self._delete_leaf(node)
+            # Some callback operations
+            to_evict_nodes.append(node)
 
-            if len(node.parent.children) == 0:
-                heapq.heappush(leaves, node.parent)
-        self.num_nodes -= num_evicted
+            num_evicted += 1
+            if location == BlockLocation.CPU:
+                self._delete_leaf(node)
+            else:
+                self._swap_gpu_leaf(node)
+
+            # Add leaves
+            add_leaves_(node)
+        
+        evict_callback(to_evict_nodes, location)
+
+        if location == BlockLocation.GPU:
+            self.num_gpu_nodes -= num_evicted
+        else:
+            self.num_cpu_nodes -= num_evicted
 
     def inc_lock_ref(self, node: TreeNode):
         if self.disable:
@@ -248,7 +292,7 @@ class RadixCache():
         if len(key):
             assert (len(value) > 0)
 
-            self.num_nodes += 1
+            self.num_gpu_nodes += 1
             
             new_node = TreeNode()
             new_node.parent = node
@@ -269,12 +313,16 @@ class RadixCache():
             print(" " * indent, len(child.key), child.key, child.value, f"r={child.lock_ref}")
             self._print_helper(child, indent=indent + 2)
 
-    def _delete_leaf(self, node):
+    def _delete_leaf(self, node: TreeNode):
         for k, v in node.parent.children.items():
             if v == node:
                 break
         del node.parent.children[k]
         self.evictable_size_ -= len(node.key)
+
+    def _swap_gpu_leaf(self, node: TreeNode):
+        """Swap gpu node to cpu logically"""
+        node.location = BlockLocation.CPU
 
     def _total_size_helper(self, node: TreeNode):
         x = len(node.key)
@@ -282,18 +330,39 @@ class RadixCache():
             x += self._total_size_helper(child)
         return x
 
-    def _total_nodes_helper(self):
-        return self.num_nodes
+    def _total_gpu_nodes_helper(self):
+        return self.num_gpu_nodes
 
-    def _collect_leaves(self):
+    def _collect_leaves(self, location: BlockLocation) -> List[TreeNode]:
         ret_list = []
 
-        def dfs_(cur_node):
+        def is_cpu_leaves(cur_node: TreeNode) -> bool:
+            if cur_node.location == BlockLocation.CPU and len(cur_node.children) == 0:
+                return True
+            else:
+                return False
+
+        def is_gpu_leaves(cur_node: TreeNode) -> bool:
+            assert cur_node.location == BlockLocation.GPU
             if len(cur_node.children) == 0:
-                ret_list.append(cur_node)
+                return True
+            else:
+                for child_node in cur_node.children.values():
+                    if child_node.location == BlockLocation.GPU:
+                        return False
+                return True
+
+        def dfs_(cur_node: TreeNode, location: BlockLocation):
+            if location == BlockLocation.CPU:
+                if is_cpu_leaves(cur_node):
+                    ret_list.append(cur_node)
+            else:
+                if is_gpu_leaves(cur_node):
+                    ret_list.append(cur_node)
+                    return
 
             for x in cur_node.children.values():
-                dfs_(x)
+                dfs_(x, location)
 
-        dfs_(self.root_node)
+        dfs_(self.root_node, location)
         return ret_list

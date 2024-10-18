@@ -7,6 +7,7 @@ from distserve.request import Request, BatchedRequests
 from distserve.logger import init_logger
 from distserve.utils import Stage
 from distserve.utils import BlockLocation
+from distserve.radix_tree_cache import TreeNode
 
 logger = init_logger(__name__)
 
@@ -111,6 +112,15 @@ class BlockManager:
         return (
             request.get_input_len()
             + request.get_output_len()
+            + self.cache_config.block_size
+            - 1
+        ) // self.cache_config.block_size
+
+    def predict_num_blocks_needed_context(self, request: Request):
+        """Predict the number of blocks needed for a prefill"""
+        return (
+            request.get_input_len()
+            + 1
             + self.cache_config.block_size
             - 1
         ) // self.cache_config.block_size
@@ -301,6 +311,37 @@ class BlockManager:
     correctness of the code first. We will implement this idea in the future.
     """
 
+    def swap_blocks(self, nodes: List[TreeNode], location: BlockLocation):
+        """ Swap in/out node(blocks)
+
+        Args:
+            nodes (List[TreeNode]): come form rtc nodes
+            location (BlockLocation): where the nodes is now located
+
+        Returns:
+            _type_: ray handler
+        """
+        if location == BlockLocation.GPU:
+            target_location = BlockLocation.CPU
+            is_swap_in = False
+        else:
+            target_location = BlockLocation.GPU
+            is_swap_in = True
+
+        source_block_ids = []
+        target_block_ids = self._get_free_blocks(len(nodes), location)
+        for i, node in enumerate(nodes):
+            source_block_ids.append(node.value)
+            node.value = target_block_ids[i]
+            assert node.location == target_location
+        
+        self.swapping_gpu_blocks_list += source_block_ids
+        handlers = self.engine_remote_call_all_workers_async(
+            "swap_blocks", source_block_ids, target_block_ids, is_swap_in
+        )
+        return handlers
+
+
     def swap_requests(self, requests: List[Request], is_swap_in: bool):
         """Swap blocks for a batch of requests
         If `is_swap_in` is True, then swap in blocks from CPU to GPU, and vice versa
@@ -327,7 +368,7 @@ class BlockManager:
             else:
                 self.swapping_gpu_blocks_list += old_block_ids
         handlers = self.engine_remote_call_all_workers_async(
-            "swap_blocks", requests, source_block_ids, target_block_ids, is_swap_in
+            "swap_requests", requests, source_block_ids, target_block_ids, is_swap_in
         )
         return handlers
 

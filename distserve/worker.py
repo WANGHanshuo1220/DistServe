@@ -59,18 +59,25 @@ class ParaWorker:
         # K/V cache on GPU
         self.k_cache = None
         self.v_cache = None
+
         # K/V swap on CPU
         self.k_swap = None
         self.v_swap = None
+
         # CUDA streams for swapping in and out
         self.swap_in_stream = torch.cuda.Stream()
         self.swap_out_stream = torch.cuda.Stream()
+
         # The swap_event_table, refer to block_manager.py for more details
         self.swap_event_table = {}
+
         # The latest swap event in each stream
         # Used when we need to wait for all swap events to finish
-        self.latest_swap_in_event = None
-        self.latest_swap_out_event = None
+        self.latest_swap_in_request_event = None
+        self.latest_swap_out_request_event = None
+        self.latest_swap_in_block_event = None
+        self.latest_swap_out_block_event = None
+
         # Statistics
         self.execution_time = 0.0
         self.blocked_swapping_time = 0.0
@@ -268,7 +275,7 @@ class ParaWorker:
             self.v_cache
         )
         
-    def swap_blocks(
+    def swap_requests(
         self,
         request_ids: List[int],
         source_block_ids: List[int],
@@ -284,7 +291,7 @@ class ParaWorker:
         # print(f"Swap {source_block_ids} ({'CPU' if is_swap_in else 'GPU'}) to {target_block_ids} ({'GPU' if is_swap_in else 'CPU'})")
         stream = self.swap_in_stream if is_swap_in else self.swap_out_stream
 
-        # Wait until previous swapping events of the same req is finishd
+        # Wait until previous swapping events of the same req is finished
         for request_id in request_ids:
             if request_id in self.swap_event_table:
                 # If we've issued another swapping operation before, we shall wait it
@@ -311,9 +318,46 @@ class ParaWorker:
         for request_id in request_ids:
             self.swap_event_table[request_id] = event
         if is_swap_in:
-            self.latest_swap_in_event = event
+            self.latest_swap_in_request_event = event
         else:
-            self.latest_swap_out_event = event
+            self.latest_swap_out_request_event = event
+
+    def swap_blocks(
+        self,
+        source_block_ids: List[int],
+        target_block_ids: List[int],
+        is_swap_in: bool,
+    ):
+        """Swap some blocks between CPU and GPU
+        If is_swap_in, then move blocks from CPU to GPU, i.e. CPU block
+        #source_block_ids[0] will be copied to GPU block #target_block_ids[0]
+        and so on. Similar for is_swap_in = False
+        """
+
+        # print(f"Swap {source_block_ids} ({'CPU' if is_swap_in else 'GPU'}) to {target_block_ids} ({'GPU' if is_swap_in else 'CPU'})")
+        stream = self.swap_in_stream if is_swap_in else self.swap_out_stream
+
+        # Swap
+        with torch.cuda.stream(stream):
+            torch.ops.swapping_ops.swap(
+                source_block_ids,
+                target_block_ids,
+                is_swap_in,
+                self.k_cache,
+                self.v_cache,
+                self.k_swap,
+                self.v_swap,
+            )
+
+        # Record event
+        event = torch.cuda.Event()
+        event.record(stream)
+
+        # Save that event
+        if is_swap_in:
+            self.latest_swap_in_block_event = event
+        else:
+            self.latest_swap_out_block_event = event
 
     def clear_request_resource(self, request_id: int):
         """Clear the resources associated with the request."""
@@ -328,12 +372,20 @@ class ParaWorker:
 
     def wait_for_all_swap_in(self):
         """Wait for all swap in to finish"""
-        if self.latest_swap_in_event is not None:
-            self.latest_swap_in_event.synchronize()
-            self.latest_swap_in_event = None
+        if self.latest_swap_in_request_event is not None:
+            self.latest_swap_in_request_event.synchronize()
+            self.latest_swap_in_request_event = None
+
+        if self.latest_swap_in_block_event is not None:
+            self.latest_swap_in_block_event.synchronize()
+            self.latest_swap_in_block_event = None
 
     def wait_for_all_swap_out(self):
         """Wait for all swap out to finish"""
-        if self.latest_swap_out_event is not None:
-            self.latest_swap_out_event.synchronize()
-            self.latest_swap_out_event = None
+        if self.latest_swap_out_request_event is not None:
+            self.latest_swap_out_request_event.synchronize()
+            self.latest_swap_out_request_event = None
+
+        if self.latest_swap_out_block_event is not None:
+            self.latest_swap_out_block_event.synchronize()
+            self.latest_swap_out_block_event = None

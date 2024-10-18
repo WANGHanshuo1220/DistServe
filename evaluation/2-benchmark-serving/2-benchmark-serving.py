@@ -66,7 +66,7 @@ def sample_requests(
     # Filter out sequences that are too long or too short
     filtered_dataset: List[TestRequest] = []
     for i in range(len(dataset)):
-        if len(filtered_dataset) == num_requests:
+        if len(filtered_dataset) == num_requests*5:
             break
 
         # Tokenize the prompts and completions.
@@ -83,13 +83,13 @@ def sample_requests(
         if prompt_len > 128 or prompt_len + output_len > 2048:
             # Prune too long sequences.
             continue
-        filtered_dataset.append(TestRequest(prompt, prompt_len, output_len))
+        # filtered_dataset.append(TestRequest(prompt, prompt_len, output_len))
 
-        # cut_prompts = smart_text_cut(prompt)
-        # for prompt in cut_prompts:
-        #     prompt_token_ids = tokenizer(prompt).input_ids
-        #     prompt_len = len(prompt_token_ids)
-        #     filtered_dataset.append(TestRequest(prompt, prompt_len, output_len))
+        cut_prompts = smart_text_cut(prompt)
+        for prompt in cut_prompts:
+            prompt_token_ids = tokenizer(prompt).input_ids
+            prompt_len = len(prompt_token_ids)
+            filtered_dataset.append(TestRequest(prompt, prompt_len, output_len))
             
     return filtered_dataset
 
